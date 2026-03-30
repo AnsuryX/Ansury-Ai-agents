@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
+import { google } from "googleapis";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -22,23 +23,51 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // Initialize Gemini
 const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
+// Initialize Google OAuth
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  process.env.GOOGLE_REDIRECT_URI || `${process.env.APP_URL}/auth/google/callback`
+);
+
 app.use(express.json());
 
-// --- API Routes ---
+// --- Google OAuth Routes ---
 
-// WhatsApp Webhook Verification
-app.get("/api/webhook/whatsapp", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+app.get("/api/auth/google/url", (req, res) => {
+  const url = oauth2Client.generateAuthUrl({
+    access_type: "offline",
+    scope: ["https://www.googleapis.com/auth/calendar"],
+    prompt: "consent",
+  });
+  res.json({ url });
+});
 
-  if (mode && token) {
-    if (mode === "subscribe" && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-      console.log("WEBHOOK_VERIFIED");
-      res.status(200).send(challenge);
-    } else {
-      res.sendStatus(403);
-    }
+app.get("/auth/google/callback", async (req, res) => {
+  const { code } = req.query;
+  try {
+    const { tokens } = await oauth2Client.getToken(code as string);
+    // Store tokens in Supabase (global settings for now)
+    await supabase.from("settings").upsert({ key: "google_tokens", value: tokens });
+    
+    res.send(`
+      <html>
+        <body>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS' }, '*');
+              window.close();
+            } else {
+              window.location.href = '/';
+            }
+          </script>
+          <p>Authentication successful. This window should close automatically.</p>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error("Error exchanging code:", error);
+    res.status(500).send("Authentication failed.");
   }
 });
 
@@ -47,103 +76,178 @@ app.get("/api/webhook/whatsapp", (req, res) => {
 async function getAgentResponse(whatsappNumber: string, userMessage: string) {
   try {
     // 1. Fetch thread and agent type from Supabase
-    const { data: thread, error: threadError } = await supabase
+    const { data: thread } = await supabase
       .from("threads")
       .select("*")
       .eq("whatsapp_number", whatsappNumber)
       .single();
 
-    let agentType = "support";
-    let history = [];
+    let agentType = thread?.agent_type || "support";
+    let history = thread?.history || [];
 
-    if (thread) {
-      agentType = thread.agent_type;
-      history = thread.history || [];
-    } else {
-      // Create new thread if not exists
-      await supabase.from("threads").insert({
-        whatsapp_number: whatsappNumber,
-        agent_type: "support",
-        history: [],
-      });
+    if (!thread) {
+      await supabase.from("threads").insert({ whatsapp_number: whatsappNumber, agent_type: "support", history: [] });
     }
 
-    // 2. Get system prompt based on agent type
+    // 2. Get system prompt
     const { data: settings } = await supabase.from("settings").select("*").eq("key", "prompts").single();
     const prompts = settings?.value || {
-      sales: "You are a persuasive sales agent...",
-      marketing: "You are a creative marketing expert...",
-      support: "You are a helpful customer support agent...",
+      sales: "You are a persuasive sales agent. Use 'check_availability' and 'book_meeting' to schedule calls.",
+      marketing: "You are a creative marketing expert. Use 'capture_lead' to save potential customer info.",
+      support: "You are a helpful customer support agent. Use 'switch_agent' if the user wants to buy something.",
     };
 
     const systemInstruction = prompts[agentType] || prompts.support;
 
-    // 3. Define Booking Tool (Function Calling)
-    const bookingTool = {
-      name: "book_meeting",
-      description: "Book a meeting with a sales representative.",
-      parameters: {
-        type: Type.OBJECT,
-        properties: {
-          date: { type: Type.STRING, description: "The date for the meeting (YYYY-MM-DD)" },
-          time: { type: Type.STRING, description: "The time for the meeting (HH:MM)" },
-          email: { type: Type.STRING, description: "The user's email address" },
-        },
-        required: ["date", "time", "email"],
+    // 3. Define Autonomous Tools
+    const tools = [
+      {
+        functionDeclarations: [
+          {
+            name: "check_availability",
+            description: "Check if a specific date and time is available for a meeting.",
+            parameters: {
+              type: Type.OBJECT,
+              properties: {
+                date: { type: Type.STRING, description: "Date (YYYY-MM-DD)" },
+                time: { type: Type.STRING, description: "Time (HH:MM)" },
+              },
+              required: ["date", "time"],
+            },
+          },
+          {
+            name: "book_meeting",
+            description: "Book a meeting on the calendar.",
+            parameters: {
+              type: Type.OBJECT,
+              properties: {
+                date: { type: Type.STRING, description: "Date (YYYY-MM-DD)" },
+                time: { type: Type.STRING, description: "Time (HH:MM)" },
+                email: { type: Type.STRING, description: "User email" },
+                summary: { type: Type.STRING, description: "Meeting title" },
+              },
+              required: ["date", "time", "email"],
+            },
+          },
+          {
+            name: "capture_lead",
+            description: "Save a new lead's contact information to the database.",
+            parameters: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                email: { type: Type.STRING },
+                phone: { type: Type.STRING },
+              },
+              required: ["name"],
+            },
+          },
+          {
+            name: "switch_agent",
+            description: "Switch the conversation to a different specialized agent (sales, marketing, support).",
+            parameters: {
+              type: Type.OBJECT,
+              properties: {
+                target_agent: { type: Type.STRING, enum: ["sales", "marketing", "support"] },
+              },
+              required: ["target_agent"],
+            },
+          },
+        ],
       },
-    };
+      { googleSearch: {} } // Autonomous web search
+    ];
 
     // 4. Call Gemini
-    const response = await genAI.models.generateContent({
+    const model = genAI.models.generateContent({
       model: "gemini-1.5-flash",
       contents: [
-        ...history.map((h: any) => ({
-          role: h.role === "user" ? "user" : "model",
-          parts: [{ text: h.text }],
-        })),
+        ...history.map((h: any) => ({ role: h.role === "user" ? "user" : "model", parts: [{ text: h.text }] })),
         { role: "user", parts: [{ text: userMessage }] }
       ],
-      config: {
-        systemInstruction,
-        tools: [{ functionDeclarations: [bookingTool] }],
-      },
+      config: { systemInstruction, tools },
     });
+
+    let response = await model;
+    
+    // 5. Handle Tool Calls Loop
+    while (response.functionCalls && response.functionCalls.length > 0) {
+      const functionResponses = [];
+
+      for (const call of response.functionCalls) {
+        const args = call.args as any;
+        let result = {};
+
+        if (call.name === "check_availability") {
+          const { data: tokens } = await supabase.from("settings").select("value").eq("key", "google_tokens").single();
+          if (tokens?.value) {
+            oauth2Client.setCredentials(tokens.value);
+            const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+            const start = new Date(`${args.date}T${args.time}:00Z`);
+            const end = new Date(start.getTime() + 30 * 60000);
+            const events = await calendar.events.list({
+              calendarId: "primary",
+              timeMin: start.toISOString(),
+              timeMax: end.toISOString(),
+              singleEvents: true,
+            });
+            result = { available: events.data.items?.length === 0 };
+          } else {
+            result = { error: "Google Calendar not connected." };
+          }
+        } 
+        else if (call.name === "book_meeting") {
+          const { data: tokens } = await supabase.from("settings").select("value").eq("key", "google_tokens").single();
+          if (tokens?.value) {
+            oauth2Client.setCredentials(tokens.value);
+            const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+            const start = new Date(`${args.date}T${args.time}:00Z`);
+            const end = new Date(start.getTime() + 30 * 60000);
+            await calendar.events.insert({
+              calendarId: "primary",
+              requestBody: {
+                summary: args.summary || "Ansury Booking",
+                start: { dateTime: start.toISOString() },
+                end: { dateTime: end.toISOString() },
+                attendees: [{ email: args.email }],
+              },
+            });
+            result = { success: true };
+          } else {
+            result = { error: "Google Calendar not connected." };
+          }
+        }
+        else if (call.name === "capture_lead") {
+          await supabase.from("leads").insert({ name: args.name, email: args.email, phone: args.phone });
+          result = { success: true };
+        }
+        else if (call.name === "switch_agent") {
+          await supabase.from("threads").update({ agent_type: args.target_agent }).eq("whatsapp_number", whatsappNumber);
+          agentType = args.target_agent;
+          result = { success: true, message: `Switched to ${args.target_agent} agent.` };
+        }
+
+        functionResponses.push({ functionResponse: { name: call.name, response: result } });
+      }
+
+      // Send responses back to model
+      response = await genAI.models.generateContent({
+        model: "gemini-1.5-flash",
+        contents: [
+          ...history.map((h: any) => ({ role: h.role === "user" ? "user" : "model", parts: [{ text: h.text }] })),
+          { role: "user", parts: [{ text: userMessage }] },
+          { role: "model", parts: response.candidates[0].content.parts },
+          { role: "user", parts: functionResponses }
+        ],
+        config: { systemInstruction, tools }
+      });
+    }
 
     const text = response.text;
 
-    // 5. Handle Function Calls
-    const functionCalls = response.functionCalls;
-    if (functionCalls && functionCalls.length > 0) {
-      for (const call of functionCalls) {
-        if (call.name === "book_meeting") {
-          const args = call.args as any;
-          console.log(`Booking meeting for ${args.email} on ${args.date} at ${args.time}`);
-          
-          // Respond to the function call
-          const response2 = await genAI.models.generateContent({
-            model: "gemini-1.5-flash",
-            contents: [
-              ...history.map((h: any) => ({
-                role: h.role === "user" ? "user" : "model",
-                parts: [{ text: h.text }],
-              })),
-              { role: "user", parts: [{ text: userMessage }] },
-              { role: "model", parts: [{ functionCall: call }] },
-              { role: "user", parts: [{ functionResponse: { name: "book_meeting", response: { content: `Meeting booked successfully for ${args.date} at ${args.time}.` } } }] }
-            ],
-            config: { systemInstruction }
-          });
-          return response2.text;
-        }
-      }
-    }
-
-    // 6. Update History in Supabase
+    // 6. Update History
     const updatedHistory = [...history, { role: "user", text: userMessage }, { role: "model", text }];
-    await supabase
-      .from("threads")
-      .update({ history: updatedHistory })
-      .eq("whatsapp_number", whatsappNumber);
+    await supabase.from("threads").update({ history: updatedHistory }).eq("whatsapp_number", whatsappNumber);
 
     return text;
   } catch (error) {
