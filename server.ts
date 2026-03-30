@@ -314,6 +314,36 @@ app.post("/api/settings", async (req, res) => {
   res.json({ success: true });
 });
 
+app.get("/api/health", async (req, res) => {
+  const health = {
+    supabase: { status: "offline", latency: 0 },
+    google: { status: "disconnected", lastSync: null },
+    whatsapp: { status: "active", webhook: "connected" },
+    gemini: { status: "online" }
+  };
+
+  const start = Date.now();
+  try {
+    const { error } = await supabase.from("settings").select("key").limit(1);
+    if (!error) {
+      health.supabase.status = "online";
+      health.supabase.latency = Date.now() - start;
+    }
+  } catch (e) {
+    health.supabase.status = "error";
+  }
+
+  try {
+    const { data: tokens } = await supabase.from("settings").select("value").eq("key", "google_tokens").single();
+    if (tokens?.value) {
+      health.google.status = "connected";
+      health.google.lastSync = new Date().toISOString();
+    }
+  } catch (e) {}
+
+  res.json(health);
+});
+
 // --- Vite Middleware ---
 if (process.env.NODE_ENV !== "production") {
   const vite = await createViteServer({

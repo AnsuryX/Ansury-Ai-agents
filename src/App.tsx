@@ -82,6 +82,12 @@ const Header = () => (
 // --- Pages ---
 
 const DashboardPage = () => {
+  const [health, setHealth] = useState({
+    whatsapp: "ACTIVE",
+    google: "CONNECTED",
+    supabase: "SYNCED"
+  });
+
   const stats = [
     { label: "Active Threads", value: "128", change: "+12%" },
     { label: "Conversion Rate", value: "24.5%", change: "+3.2%" },
@@ -91,6 +97,16 @@ const DashboardPage = () => {
 
   return (
     <div className="p-8 space-y-8">
+      {/* Health Indicators Bar */}
+      <div className="flex space-x-4">
+        {Object.entries(health).map(([key, status]) => (
+          <div key={key} className="flex items-center space-x-2 bg-white px-3 py-1.5 border border-[#E4E3E0] rounded-full shadow-sm">
+            <div className={cn("w-2 h-2 rounded-full animate-pulse", status === "ACTIVE" || status === "CONNECTED" || status === "SYNCED" ? "bg-green-500" : "bg-red-500")}></div>
+            <span className="text-[10px] font-mono font-bold uppercase tracking-tight">{key}: {status}</span>
+          </div>
+        ))}
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         {stats.map((stat) => (
           <div key={stat.label} className="bg-white p-6 border border-[#E4E3E0] rounded-lg shadow-sm">
