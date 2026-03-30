@@ -88,6 +88,14 @@ const DashboardPage = () => {
     supabase: "SYNCED"
   });
 
+  const [tasks, setTasks] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetch("/api/tasks")
+      .then(res => res.json())
+      .then(data => setTasks(data));
+  }, []);
+
   const stats = [
     { label: "Active Threads", value: "128", change: "+12%" },
     { label: "Conversion Rate", value: "24.5%", change: "+3.2%" },
@@ -121,29 +129,60 @@ const DashboardPage = () => {
         ))}
       </div>
       
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="bg-white border border-[#E4E3E0] rounded-lg overflow-hidden">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Tasks Section */}
+        <div className="lg:col-span-2 bg-white border border-[#E4E3E0] rounded-lg overflow-hidden flex flex-col shadow-sm">
           <div className="p-4 border-b border-[#E4E3E0] flex justify-between items-center bg-[#F9F9F9]">
-            <h3 className="font-serif italic text-sm font-bold">Recent Lead Activity</h3>
-            <Link to="/leads" className="text-xs text-[#F27D26] hover:underline">View all</Link>
+            <h3 className="font-serif italic text-sm font-bold">Agent Task Queue</h3>
+            <button className="text-[10px] font-mono bg-[#141414] text-white px-2 py-1 rounded hover:bg-black transition-colors">NEW TASK</button>
           </div>
-          <div className="divide-y divide-[#E4E3E0]">
-            {[1, 2, 3, 4, 5].map((i) => (
-              <div key={i} className="p-4 flex items-center justify-between hover:bg-[#F5F5F5] transition-colors">
-                <div className="flex items-center">
-                  <div className="w-10 h-10 rounded bg-[#141414] text-white flex items-center justify-center font-mono text-xs">LD</div>
-                  <div className="ml-4">
-                    <p className="text-sm font-bold">Lead #{i * 123}</p>
-                    <p className="text-xs text-[#8E9299]">Captured via WhatsApp • 2m ago</p>
+          <div className="flex-1 overflow-y-auto divide-y divide-[#E4E3E0]">
+            {tasks.map((task) => (
+              <div key={task.id} className="p-4 hover:bg-[#F5F5F5] transition-colors group">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-start space-x-3">
+                    <div className={cn(
+                      "mt-1 w-2 h-2 rounded-full",
+                      task.priority === "high" ? "bg-red-500" : task.priority === "medium" ? "bg-orange-500" : "bg-blue-500"
+                    )}></div>
+                    <div>
+                      <p className={cn("text-sm font-bold", task.status === "completed" && "line-through text-[#8E9299]")}>{task.title}</p>
+                      <p className="text-xs text-[#8E9299] mt-1">{task.description}</p>
+                      <div className="flex items-center space-x-2 mt-2">
+                        <span className="text-[9px] font-mono bg-[#F5F5F5] px-1.5 py-0.5 rounded text-[#8E9299] uppercase">{task.assigned_agent}</span>
+                        <span className="text-[9px] font-mono text-[#8E9299]">{task.status.toUpperCase()}</span>
+                      </div>
+                    </div>
                   </div>
+                  <button className="opacity-0 group-hover:opacity-100 transition-opacity text-xs text-[#F27D26] font-bold">MARK DONE</button>
                 </div>
-                <span className="text-xs font-mono bg-blue-100 text-blue-700 px-2 py-1 rounded">QUALIFIED</span>
               </div>
             ))}
           </div>
         </div>
 
-        <div className="bg-white border border-[#E4E3E0] rounded-lg overflow-hidden">
+        {/* Recent Activity (Moved) */}
+        <div className="bg-white border border-[#E4E3E0] rounded-lg overflow-hidden shadow-sm">
+          <div className="p-4 border-b border-[#E4E3E0] flex justify-between items-center bg-[#F9F9F9]">
+            <h3 className="font-serif italic text-sm font-bold">Lead Activity</h3>
+          </div>
+          <div className="divide-y divide-[#E4E3E0]">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="p-4 flex items-center space-x-3 hover:bg-[#F5F5F5] transition-colors">
+                <div className="w-8 h-8 rounded bg-[#141414] text-white flex items-center justify-center font-mono text-[10px]">LD</div>
+                <div>
+                  <p className="text-xs font-bold">Lead #{i * 123}</p>
+                  <p className="text-[10px] text-[#8E9299]">2m ago</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* System Health Section (Keep existing) */}
+        <div className="bg-white border border-[#E4E3E0] rounded-lg overflow-hidden shadow-sm">
           <div className="p-4 border-b border-[#E4E3E0] flex justify-between items-center bg-[#F9F9F9]">
             <h3 className="font-serif italic text-sm font-bold">System Health</h3>
           </div>

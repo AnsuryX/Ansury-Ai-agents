@@ -153,6 +153,20 @@ async function getAgentResponse(whatsappNumber: string, userMessage: string) {
               required: ["target_agent"],
             },
           },
+          {
+            name: "create_task",
+            description: "Create a new task for the team or the AI agent to follow up on.",
+            parameters: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                description: { type: Type.STRING },
+                priority: { type: Type.STRING, enum: ["low", "medium", "high"] },
+                assigned_agent: { type: Type.STRING, enum: ["sales", "marketing", "support"] },
+              },
+              required: ["title", "assigned_agent"],
+            },
+          },
         ],
       },
       { googleSearch: {} } // Autonomous web search
@@ -225,6 +239,15 @@ async function getAgentResponse(whatsappNumber: string, userMessage: string) {
           await supabase.from("threads").update({ agent_type: args.target_agent }).eq("whatsapp_number", whatsappNumber);
           agentType = args.target_agent;
           result = { success: true, message: `Switched to ${args.target_agent} agent.` };
+        }
+        else if (call.name === "create_task") {
+          await supabase.from("tasks").insert({
+            title: args.title,
+            description: args.description,
+            priority: args.priority || "medium",
+            assigned_agent: args.assigned_agent,
+          });
+          result = { success: true, message: "Task created successfully." };
         }
 
         functionResponses.push({ functionResponse: { name: call.name, response: result } });
@@ -299,6 +322,24 @@ app.get("/api/leads", async (req, res) => {
     { id: 1, name: "John Doe", email: "john@example.com", phone: "+1234567890", status: "New" },
     { id: 2, name: "Jane Smith", email: "jane@example.com", phone: "+0987654321", status: "Contacted" },
   ]);
+});
+
+app.get("/api/tasks", async (req, res) => {
+  // Mock tasks for now
+  res.json([
+    { id: 1, title: "Follow up with John Doe", description: "John requested a demo of the sales automation.", status: "pending", priority: "high", assigned_agent: "sales" },
+    { id: 2, title: "Update Marketing Prompt", description: "Refine the marketing agent's tone for the new campaign.", status: "completed", priority: "medium", assigned_agent: "marketing" },
+  ]);
+});
+
+app.post("/api/tasks", async (req, res) => {
+  // Logic to save task to Supabase
+  res.json({ success: true });
+});
+
+app.patch("/api/tasks/:id", async (req, res) => {
+  // Logic to update task status
+  res.json({ success: true });
 });
 
 app.get("/api/settings", async (req, res) => {
